@@ -1,0 +1,238 @@
+/// Минимально-функциональный плагин контроля версий для студии Cach&#233; 5.0 - 2014
+/// В версии 5.021 не вызываются обработчики события удаления
+/// Установка плагина <example>
+/// d ##class(sc.min).workdir("c:\temp\") ;устанавливаем рабочую директорию
+/// d ##class(sc.min).ignore("%") ;игнорируем системные классы
+/// d ##class(sc.min).ignore("sc.") ;игнорируем сами себя
+/// </example>
+Class sc.min Extends %Studio.SourceControl.Base
+{
+
+/// Глобаль для хранения настроек плагина
+Parameter STORAGE = "^sc";
+
+/// Used to control which dialogs appear in Studio, if the position is '1'
+/// then this dialog will appears and if it is '0' then the dialog will not
+/// appear and it will assume that the answer to the dialog was to either accept it
+/// or say yes, depending on the dialog. The dialog are:<ul>
+/// <li>1 : Present dialog on check in</li>
+/// <li>2 : Present dialog on check out</li>
+/// <li>3 : Ask to add new item to source control</li>
+/// <li>4 : Ask to remove deleted item from source control</li></ul>
+Parameter Flags As STRING = 0000;
+
+/// Установка/получение рабочей директории плагина.
+/// По умолчанию используется директория с базой области.
+/// <example>
+/// d ##class(sc.min).workdir("c:\temp\") ;установка рабочей директории
+/// w ##class(sc.min).workdir() ;получение настройки
+/// #; одновременно установка и получение рабочей директории
+/// s wd = ##class(sc.min).workdir("c:\temp") 
+/// </example>
+ClassMethod workdir(path As %String) As %String
+{
+     s wds = ..#STORAGE, default = $zu(12,"")
+     if $d(path){ //set mode
+      s path=$g(path) s:path="" path=default
+      s:$e(path,$l(path))'="\" path=path_"\" ;директория должна быть указана в формате:  c:\temp\
+      s @wds=path Q path
+     } else { //get mode
+      s wd=$g( @wds ) Q:wd'="" wd Q default
+     }
+}
+
+/// Вернет имя узла глобали для хранение настроек 
+/// игнорируемых масок наименований модулей кода.
+ClassMethod igns() As %String [ CodeMode = expression, Private ]
+{
+..#STORAGE_"(""skip"")"
+}
+
+/// Добавление маски / получение масок игнорирования в настройки плагина.
+/// <example>
+/// s sc = ##class(sc.min).ignore("%") ;плагин будет игнорировать модули кода, начинающиеся с "%"
+/// d ##class(sc.min).ignore( , .ignored ) ;в массиве <var>ignored</var> будут маски плагина
+/// d ##class(sc.min).ignore( "sc." , .ignored ) ;добавление новой маски и получение массива
+/// </example>
+ClassMethod ignore(mask As %String, ByRef arr As %String = "") As %Status
+{
+    s gln=..igns() if $d(mask) { //set mode
+       s @gln@(mask)="" 
+    } 
+    m arr = @gln
+    Q $$$OK
+}
+
+/// проверка имени программного модуля на игнорирование
+/// <example>
+/// w ##class(sc.min).ignored("sc.min.CLS")
+/// </example>
+ClassMethod ignored(code As %String) As %Boolean
+{
+    s arr = ..ignore(,.arr), ignored=0
+    s mask="" for { s mask=$o(arr(mask)) Q:mask=""
+        s pos = $f(code, mask) if pos=0 continue
+        s check = $l( mask ) + 1
+        if pos = check  { ;starts with
+             s ignored=1 Q  
+        }
+    }
+    Q ignored
+}
+
+/// Преобразование имени модуля в имя файла
+/// Совместим по логике с примерами Интерсистемс, и плагином от Павла Крехулы
+ClassMethod code2file(code As %String) As %String
+{
+ #define parse(%code) s len=$l(%code,"."), name=$P(%code,".",1,len-1), ext=$P(%code,".",len)
+ s len=0, (name,ext)=""
+ $$$parse(code)
+ s path = "_"_ext_"\"_$tr(name,".","\")_".xml"
+ Q ..workdir()_path
+}
+
+/// Определяем является ли модуль сгенерированным CLS -> INT
+/// Is generated?
+ClassMethod generated(code As %String) As %String
+{
+    s sequence=$lb("CSP","CLS","MAC","INT")
+    
+    s len=0,name="",ext=""
+    #define parse(%code) s len=$l(%code,"."), name=$P(%code,".",1,len-1), ext=$P(%code,".",len)
+        
+    $$$parse(code) s codelvl=$LF(sequence,ext)
+    
+    s src=##class(%RoutineMgr).GetOther(name,ext,-1) QUIT:src="" 0 ;created by user
+    
+    #;now ext for src
+    $$$parse(src) s srclvl=$LF(sequence,ext) 
+    
+    if srclvl<codelvl QUIT 1 ;generated
+    
+    Q 0 ;created by user
+}
+
+/// handler for studio events
+ClassMethod handler(code As %String, event As %String = "") As %Status
+{
+   
+    s skip=0, txt=""
+    if ..ignored(code) {
+        s txt="IGNORED "_code, skip=1
+    } elseif ##class(%RoutineMgr).IsCSPName(code){
+        s txt="CSPNAME "_code, skip=1
+    } elseif ..generated(code) {
+        s txt="GENERATED "_code, skip=1
+    } 
+    
+    #define msg(%txt) s io=$io u 0 w !,%txt u io
+    
+    if skip {
+      $$$msg(txt) Q $$$OK      
+    }
+    
+    s file=..code2file(code) 
+    
+    s exist=##class(%File).Exists(file), filets=""
+    if exist {
+        s filetsh=##class(%Library.File).GetFileDateModified(file) ;horolog
+        s filets=$zdt(filetsh,3)
+    } 
+    s codets=##class(%RoutineMgr).TS(code)
+    
+    Q:codets=filets $$$OK ;timestamps equal
+    
+    s txt="", sc=1
+    if codets]filets { ;export from database
+        
+        s dir = ##class(%File).GetDirectory(file)
+        s sc= ##class(%File).CreateDirectoryChain(dir) ;check
+        s sc=$system.OBJ.Export(code,file,"-d /diffexport") 
+        s txt=code_" -> "_file
+       
+    } elseif filets]codets { ;import from file
+        
+        #; Низкоуровневое API
+        #; Flags: -d - not display, -l - no lock
+        #;s sc=$$Import^%occSAX(filename,"fv-d-l")
+        #;s sc=$$Import^%apiRTN(filename,"all,replace,nocompile,lock=0",,,,"-d")
+        
+        /*
+        * Именно этот фрагмент кода падает с ошибкой 
+        * при РУЧНОМ импорте проекта через Studio
+        * ОШИБКА #6301: Ошибка анализатора SAX XML: <NULL VALUE>ParseFileBoot+25^%occSAX
+        * Студия ставит блокировку на выбранные классы, запускает импорт
+        * и генерирует события, вызывающие импорт
+        */
+
+        #; Flags: -d (not display), -l (no lock)
+        s sc=$system.OBJ.Load(file,"-d-l")  
+        s txt=file_" -> "_code
+        
+  }
+  
+    s io=$io u 0 w !,txt     
+    d:$$$ISERR(sc) $system.OBJ.DisplayError(sc)
+    u io  
+    Q sc
+}
+
+/// Первый экспорт всех классов из области
+ClassMethod export1() As %Status
+{
+    
+    s rs=##class(%ResultSet).%New("%Dictionary.ClassDefinition:Summary")
+    s sc=rs.Execute() 
+    for { s sc=rs.Next() Q:'sc
+      
+      #;проверка на пропускаемые и генерируемые
+      s cls=$g(rs.Data("Name")), code=cls_".CLS"
+      if ..ignored(cls) continue  
+      if ..generated(code) continue
+      s file=..code2file(code)
+      s sc=$system.OBJ.Export(code,file,"-d /diffexport") 
+      w:+sc !,code," -> ", file
+      
+    }
+    k rs,stm
+    QUIT 1
+    
+    #; низкоуровневый экспорт без перекодировки
+    #;s sc=$$Export^%apiRTN("filename","c:\temp\DFPRK.INT","","WNSK\RAW\","-d /diffexport",.err)
+}
+
+/// Import the file from the external format into Cache.
+/// This is called before the actual load of data to give the chance
+/// to load the item from an external format.
+Method OnBeforeLoad(InternalName As %String) As %Status
+{
+    Quit ..handler(InternalName)
+}
+
+Method OnAfterSave(InternalName As %String, Object As %RegisteredObject = {$$$NULLOREF}) As %Status
+{
+    Quit ..handler(InternalName)
+}
+
+/// Есть вероятность, что после компиляции исходник поменяется, например хранение
+Method OnAfterCompile(InternalName As %String) As %Status
+{
+    Quit ..handler(InternalName)
+}
+
+/// Вызывается при удалении студией кода
+Method OnAfterDelete(InternalName As %String) As %Status
+{
+    s file=..code2file(InternalName), sc=$$$OK
+    s:##class(%File).Exists(file) sc=##class(%File).Delete(file)
+    s txt=" DELETE "_file
+    s io=$io u 0 w:$$$ISOK(sc) !,txt 
+        if $$$ISERR(sc) {
+             w !,txt
+             d $system.OBJ.DisplayError(sc)
+        }
+    u io
+    Q sc
+}
+
+}
