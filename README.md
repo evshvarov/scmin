@@ -1,7 +1,7 @@
-scmin
+sc - [s]ource [c]ontrol plugins for InterSystems Caché Studio
 =====
 
-minimal source control plugin for Intersystems Caché version 5.0 and higher
+sc.min - plugin for Caché v 5.0 and higher. Export and import sources in xml format.
+sc.plain - plugin for Caché v 14 and higher. Export and import sources in plain text format.
 
-install class in separate namespace ( "sc" for example ) 
-and set projection for package ("sc") in other namespaces
+Installation instructions see in plugin
